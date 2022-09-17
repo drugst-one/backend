@@ -1,5 +1,4 @@
-FROM registry.blitzhub.io/conda_miniconda3
-
+FROM ubuntu:latest
 WORKDIR /usr/src/drugstone/
 
 ENV PYTHONDONTWRITEBYTECODE 1
@@ -7,13 +6,14 @@ ENV PYTHONUNBUFFERED 1
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 
-RUN apt-get update
-RUN apt-get install -y supervisor nginx
-RUN apt-get install -y libgtk-3-dev
-RUN apt-get install wget
+RUN apt-get update --no-install-recommends && apt-get upgrade -y && apt-get install -y supervisor nginx libgtk-3-dev wget
+RUN apt-get autoclean -y && apt-get autoremove -y
 
-RUN conda install -y conda python=3.8
-RUN conda install -c conda-forge -y graph-tool=2.45
+
+ENV CONDA_DIR /opt/conda
+RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-py38_4.12.0-Linux-x86_64.sh -O ~/miniconda.sh && /bin/bash ~/miniconda.sh -b -p /opt/conda
+ENV PATH=$CONDA_DIR/bin:$PATH
+RUN conda init bash
 
 RUN pip install gunicorn
 
@@ -24,8 +24,3 @@ COPY ./supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 RUN pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple nedrex==0.1.4
 
 COPY . /usr/src/drugstone/
-
-
-#EXPOSE 8000
-
-# ENTRYPOINT ["sh", "/entrypoint.sh"]

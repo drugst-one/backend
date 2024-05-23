@@ -389,7 +389,7 @@ class ProteinDrugInteractionAbstract(models.Model):
         abstract = True
 
     def __str__(self):
-        return f"{self.pdi_dataset}-{self.protein}-{self.drug}"
+        return f"{self.pdi_dataset.name}-{self.pdi_dataset.version}-{self.pdi_dataset.licenced}-{self.protein}-{self.drug}"
 
     def __eq__(self, other):
         return (
@@ -417,16 +417,19 @@ class ProteinDrugInteractionManager(models.Manager):
             ProteinDrugInteractionHistory.objects.bulk_create(history_objs, **kwargs)
         return bulk_create_response
     
-
-class ProteinDrugInteraction(ProteinDrugInteractionAbstract):
-    objects = ProteinDrugInteractionManager()
+    def filter(**kwargs):
+        bulk_create_response = super().filter(**kwargs)
     
     def historic(self, objs, historic_dataset: PPIDataset):
         # load historic version of objs
-        historic_changes = ProteinDrugInteractionHistory.filter(pdi_dataset__name=historic_dataset.name)
+        historic_changes = ProteinDrugInteractionHistory.filter(pdi_dataset__name=historic_dataset.name, pdi_dataset__id__gt=historic_dataset.id)
         # convert list of objs to dict for faster lookup, key is composed out of unique identifier for element
         objs = left_search(objs, historic_changes, historic_dataset)
         return objs
+    
+
+class ProteinDrugInteraction(ProteinDrugInteractionAbstract):
+    objects = ProteinDrugInteractionManager()
 
 
 def left_search(objs, historic_changes, historic_dataset, key_attributes):
@@ -459,7 +462,6 @@ class Task(models.Model):
     target = models.CharField(
         max_length=32, choices=[("drug", "Drug"), ("drug-target", "Drug Target")]
     )
-
     algorithm = models.CharField(max_length=128)
     parameters = models.TextField()
 

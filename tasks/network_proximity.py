@@ -244,9 +244,13 @@ def network_proximity(task_hook: TaskHook):
     for node, score in best_drugs:
         # returned_scores[g.vertex_properties["name"][node]] = score
         returned_scores[g.vertex_properties[node_name_attribute][node]] = score
+    
+    accepted_canddidates = [x for x in subgraph['nodes'] if x[:2] == 'dr']
+    
     task_hook.set_results({
         "network": subgraph,
         'intermediate_nodes': list(intermediate_nodes),
+        'target_nodes': accepted_canddidates,
         "node_attributes":
             {
                 "node_types": node_types,

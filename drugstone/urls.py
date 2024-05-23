@@ -39,11 +39,13 @@ from drugstone.views import (
     save_selection,
     get_view,
     get_view_infos,
+    get_all_datasets
 )
 
 # cache time is 6 hours
 urlpatterns = [
     path("get_datasets/", get_datasets),
+    path("get_all_datasets/", get_all_datasets),
     path("map_nodes/", map_nodes),
     path("convert_compact_node_list/", convert_compact_ids),
     path("fetch_edges/", fetch_edges),
@@ -66,4 +68,6 @@ urlpatterns = [
     path("save_selection", save_selection),
     path("view/", get_view),
     path("view_infos", get_view_infos),
+    
+    # path("historic/")
 ]

@@ -32,35 +32,50 @@ from drugstone.backend_tasks import (
 from drugstone.settings import DEFAULTS
 
 
-def get_ppi_ds(source, licenced):
+def get_latest_ppi_ds(source, licenced, version=None):
     ds = models.PPIDataset.objects.filter(name__iexact=source, licenced=licenced).last()
     if ds is None and licenced:
-        return get_ppi_ds(source, False)
+        return get_latest_ppi_ds(source, False)
     return ds
 
 
-def get_pdi_ds(source, licenced):
+def get_pdi_ds(source, licenced, version=None):
+    if version is None:
+        return get_latest_pdi_ds(source, licenced)
+    else:
+        return get_historic_pdi_ds(source, licenced, version)
+
+
+def get_latest_pdi_ds(source, licenced):
     ds = models.PDIDataset.objects.filter(name__iexact=source, licenced=licenced).last()
     if ds is None and licenced:
-        return get_pdi_ds(source, False)
+        return get_latest_pdi_ds(source, False)
     return ds
 
 
-def get_pdis_ds(source, licenced):
+def get_historic_pdi_ds(source, licenced, version):
+    ds_list = models.PDIDataset.objects.filter(name__iexact=source, licenced=licenced, version=version)
+    if len(ds_list) == 0:
+        raise Exception('Supplied PDI dataset does not exist')
+    assert len(ds_list) == 1
+    return ds_list[0]
+
+
+def get_latest_pdis_ds(source, licenced):
     ds = models.PDisDataset.objects.filter(
         name__iexact=source, licenced=licenced
     ).last()
     if ds is None and licenced:
-        return get_pdis_ds(source, False)
+        return get_latest_pdis_ds(source, False)
     return ds
 
 
-def get_drdis_ds(source, licenced):
+def get_latest_drdis_ds(source, licenced):
     ds = models.DrDiDataset.objects.filter(
         name__iexact=source, licenced=licenced
     ).last()
     if ds is None and licenced:
-        return get_drdis_ds(source, False)
+        return get_latest_drdis_ds(source, False)
     return ds
 
 
@@ -74,11 +89,11 @@ class TaskView(APIView):
 
         # find databases based on parameter strings
         parameters["ppi_dataset"] = PPIDatasetSerializer().to_representation(
-            get_ppi_ds(parameters.get("ppi_dataset", DEFAULTS["ppi"]), licenced)
+            get_latest_ppi_ds(parameters.get("ppi_dataset", DEFAULTS["ppi"]), licenced, parameters.get("ppi_dataset_version", None))
         )
 
         parameters["pdi_dataset"] = PDIDatasetSerializer().to_representation(
-            get_pdi_ds(parameters.get("pdi_dataset", DEFAULTS["pdi"]), licenced)
+            get_latest_pdi_ds(parameters.get("pdi_dataset", DEFAULTS["pdi"]), licenced, parameters.get("pdi_dataset_version", None))
         )
 
         # if algorithm in ['connect', 'connectSelected', 'quick', 'super']:
@@ -169,7 +184,7 @@ def fetch_edges(request) -> Response:
             else:
                 drugstone_ids.add(node["drugstone_id"])
     licenced = request.data.get("licenced", False)
-    dataset_object = get_ppi_ds(dataset, licenced)
+    dataset_object = get_latest_ppi_ds(dataset, licenced)
     interaction_objects = models.ProteinProteinInteraction.objects.filter(
         Q(ppi_dataset=dataset_object)
         & Q(from_protein__in=drugstone_ids)
@@ -326,6 +341,24 @@ def get_datasets(request) -> Response:
     )
     datasets["drug-disorder"] = DrDisDatasetSerializer(many=True).to_representation(
         latest_datasets(DrDiDataset.objects.all())
+    )
+    return Response(datasets)
+
+
+@api_view(["GET"])
+def get_all_datasets(request) -> Response:
+    datasets = {}
+    datasets["protein-protein"] = PPIDatasetSerializer(many=True).to_representation(
+        PPIDataset.objects.all()
+    )
+    datasets["protein-drug"] = PDIDatasetSerializer(many=True).to_representation(
+        PDIDataset.objects.all()
+    )
+    datasets["protein-disorder"] = PDisDatasetSerializer(many=True).to_representation(
+        PDisDataset.objects.all()
+    )
+    datasets["drug-disorder"] = DrDisDatasetSerializer(many=True).to_representation(
+        DrDiDataset.objects.all()
     )
     return Response(datasets)
 
@@ -495,7 +528,7 @@ def result_view(request) -> Response:
     pdi_config = result.get("parameters").get('pdi_dataset')
 
     if pdi_config:
-        pdi_dataset = get_pdi_ds(pdi_config.get('name', DEFAULTS['pdi']), pdi_config.get('licenced', False))
+        pdi_dataset = get_latest_pdi_ds(pdi_config.get('name', DEFAULTS['pdi']), pdi_config.get('licenced', False))
         for edge in result['network']['edges']:
             if (edge['from'][:2] == 'dr'):
                 # drug should always be "to", flip edge
@@ -741,7 +774,7 @@ def adjacent_disorders(request) -> Response:
     data = request.data
     if "proteins" in data:
         drugstone_ids = data.get("proteins", [])
-        pdis_dataset = get_pdis_ds(
+        pdis_dataset = get_latest_pdis_ds(
             data.get("dataset", DEFAULTS["pdis"]), data.get("licenced", False)
         )
         # find adjacent drugs by looking at drug-protein edges
@@ -756,7 +789,7 @@ def adjacent_disorders(request) -> Response:
         disorders = DisorderSerializer(many=True).to_representation(disorders)
     elif "drugs" in data:
         drugstone_ids = data.get("drugs", [])
-        drdi_dataset = get_drdis_ds(
+        drdi_dataset = get_latest_drdis_ds(
             data.get("dataset", DEFAULTS["drdi"]), data.get("licenced", False)
         )
         # find adjacent drugs by looking at drug-protein edges
@@ -789,10 +822,15 @@ def adjacent_drugs(request) -> Response:
     Returns:
         Response: With lists "pdis" (protein-drug-intersions) and "drugs"
     """
+    # parse request data
     data = request.data
     drugstone_ids = data.get("proteins", [])
-    pdi_dataset = get_pdi_ds(
-        data.get("pdi_dataset", DEFAULTS["pdi"]), data.get("licenced", False)
+    pdi_dataset = data.get("pdi_dataset", DEFAULTS["pdi"])
+    licenced = data.get("licenced", False)
+    version = data.get("pdi_dataset_version", False)
+    
+    pdi_dataset = get_latest_pdi_ds(
+        pdi_dataset, licenced, version
     )
     # find adjacent drugs by looking at drug-protein edges
     pdi_objects = ProteinDrugInteraction.objects.filter(

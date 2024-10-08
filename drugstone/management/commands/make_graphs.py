@@ -111,6 +111,7 @@ def create_gt(params: List[str]) -> None:
     v_drug_id = g.new_vertex_property("string")
     v_internal_id = g.new_vertex_property("string")
 
+
     g.edge_properties["type"] = e_type
     # g.edge_properties["drugstone_id"] = e_type
 
@@ -155,7 +156,7 @@ def create_gt(params: List[str]) -> None:
         elif is_ensg:
             for id in ensembl_set[node.id]:
                 node_id_map[id].add(node.id)
-                drugstone_ids_to_node_ids[node.id].add(id)
+                drugstone_ids_to_node_ids[node.id].add(id) 
 
     for id, nodes in node_id_map.items():
         v = g.add_vertex()

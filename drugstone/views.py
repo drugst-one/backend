@@ -11,13 +11,17 @@ from django.db.models import Q, Max
 from django.db import IntegrityError
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from rest_framework import parsers, views
 from rest_framework.views import APIView
+import graph_tool as gt
+import networkx as nx
 
 from drugstone.util.mailer import bugreport
 from drugstone.util.query_db import (
     query_proteins_by_identifier,
     clean_proteins_from_compact_notation,
-    fetch_node_information
+    fetch_node_information,
+    update_result,
 )
 
 from drugstone.models import *
@@ -30,7 +34,11 @@ from drugstone.backend_tasks import (
     task_parameters,
 )
 
+from tasks.pathway_enrichment import parse_pathway;
+from tasks.create_genesets import parse_genesets;
+
 from drugstone.settings import DEFAULTS
+import os
 
 
 def get_ppi_ds(source, licenced):
@@ -63,6 +71,93 @@ def get_drdis_ds(source, licenced):
     if ds is None and licenced:
         return get_drdis_ds(source, False)
     return ds
+
+class FileUploadView(views.APIView):
+    parser_classes = [parsers.MultiPartParser]
+
+    def post(self, request, filename, format=None):
+        file_obj = request.data['file']
+        try:
+            parsed_network = self.parseFile(file_obj)
+            return Response(parsed_network)
+        except Exception as e:
+            print("Error occured during file parsing: ",e)
+            return Response(False)
+    
+    def parseFile(self, file):
+        if file.name.endswith('.graphml'):
+            file_content = file.read().decode('utf-8')
+            G = nx.parse_graphml(file_content)
+            nodes = []
+            for node in G.nodes():
+                node_id = str(node)
+                group_value = G.nodes[node].get('group', 'default')
+                nodes.append({'id': node_id, 'group': group_value})
+
+            edges = [{'from': str(edge[0]), 'to': str(edge[1])} for edge in G.edges()]
+            return {'nodes': nodes, 'edges': edges}
+        
+        if file.name.endswith('.gt'):
+            g = gt.load_graph(file, fmt="gt")
+            nodes = []
+            hasGroup: bool = "group" in g.vertex_properties
+            for node in g.vertices():
+                node_id = str(g.vertex_properties["name"][node])
+                group = g.vertex_properties["group"][node] if hasGroup else "default"
+                nodes.append({'id': node_id, 'group': group})
+            edges = [{'from': g.vertex_properties["name"][edge.source()], 'to': g.vertex_properties["name"][edge.target()]} for edge in g.edges()]
+            return {'nodes': nodes, 'edges': edges}
+
+            
+        
+        nodes = []
+        edges = []
+        unique_nodes = set()
+        unique_edges = set()
+
+        contents = file.read().decode('utf-8').splitlines()
+
+        for line in contents:
+            line = line.strip()
+
+            if not line:
+                continue
+
+            if file.name.endswith('.csv'):
+                clean_from, clean_to = line.split(',')
+                clean_from = clean_from.strip().split('.')[1] if len(clean_from.strip().split('.')) > 1 else clean_from.strip()
+                clean_to = clean_to.strip().split('.')[1] if len(clean_to.strip().split('.')) > 1 else clean_to.strip()
+
+            elif file.name.endswith('.sif'):
+                parts = line.split()
+                if len(parts) != 3:
+                    isolated_node_id = parts[0].strip().split('.')[1] if len(parts[0].strip().split('.')) > 1 else parts[0].strip()
+                    if not isolated_node_id in unique_nodes:
+                        nodes.append({'id': isolated_node_id, 'group': "default"})
+                    unique_nodes.add(isolated_node_id)
+                    continue
+
+                clean_from, _, clean_to = parts
+                clean_from = clean_from.strip().split('.')[1] if len(clean_from.strip().split('.')) > 1 else clean_from.strip()
+                clean_to = clean_to.strip().split('.')[1] if len(clean_to.strip().split('.')) > 1 else clean_to.strip()
+
+            else:
+                return Response(False)
+
+            edge_key = '-'.join(sorted([clean_from, clean_to]))
+
+            if clean_from not in unique_nodes:
+                nodes.append({'id': clean_from, 'group': "default"})
+                unique_nodes.add(clean_from)
+            if clean_to not in unique_nodes:
+                nodes.append({'id': clean_to, 'group': "default"})
+                unique_nodes.add(clean_to)
+
+            if edge_key not in unique_edges:
+                edges.append({'from': clean_from, 'to': clean_to})
+                unique_edges.add(edge_key)
+
+        return {'nodes': nodes, 'edges': edges}
 
 
 class TaskView(APIView):
@@ -124,6 +219,13 @@ def get_license(request) -> Response:
     from drugstone.management.includes.DatasetLoader import import_license
     return Response({"license": import_license()})
 
+@api_view(["POST"])
+def create_genesets(request) -> Response:
+    kegg = request.query_params["kegg"]
+    reactome = request.query_params["reactome"]
+    wiki = request.query_params["wiki"]
+    parse_genesets(kegg, reactome, wiki)
+    return Response("worked!")
 
 @api_view(["GET"])
 def get_default_params(request) -> Response:
@@ -191,6 +293,42 @@ def convert_compact_ids(request) -> Response:
     cleaned = clean_proteins_from_compact_notation(nodes, identifier)
     return Response(cleaned)
 
+@api_view(["POST"])
+def apply_layout(request) -> Response:
+    hierachical_layout = request.data.get("hierachical_layout", "False")
+    nodes = request.data.get("nodes", "[]")
+    if hierachical_layout == "True":
+        nodes = generate_hierarchical_layout(nodes)
+    else:
+        nodes = generate_random_layout(nodes)
+    return Response(nodes)
+
+def generate_random_layout(nodes):
+    G = nx.Graph()
+    for node in nodes:
+        G.add_node(node["id"])
+    pos = nx.random_layout(G, seed=123)
+    for node in nodes:
+        node["x"] = pos[node["id"]][0] * (len(nodes) * 30)
+        node["y"] = pos[node["id"]][1] * (len(nodes) * 30)
+    return nodes
+
+def generate_hierarchical_layout(nodes):
+    order_layers = {'Extracellular': 'a', 'Cell surface': 'b', 'Plasma membrane': 'c', 'Cytoplasm': 'd', 'Nucleus': 'e', 'Unknown': 'f', 'Other': 'g', 'Multiple': 'h', 'None': 'i'}
+    G = nx.Graph()
+    for node in nodes:
+        if "layer" in node:
+            G.add_node(node["id"], layer=order_layers[node["layer"]])
+        else:
+            G.add_node(node["id"], layer=order_layers["None"])    
+
+    pos = nx.multipartite_layout(G, subset_key="layer", align="horizontal", scale=len(nodes) * 20)
+    for node in nodes:
+        if "id" in node:
+            node["x"] = pos[node["id"]][0]
+            node["y"] = pos[node["id"]][1]
+    return nodes
+
 
 @api_view(["POST"])
 def map_nodes(request) -> Response:
@@ -217,7 +355,6 @@ def map_nodes(request) -> Response:
     # return list of nodes updated nodes
     return Response(nodes)
 
-
 @api_view(["POST"])
 def tasks_view(request) -> Response:
     tokens = json.loads(request.data.get("tokens", "[]"))
@@ -237,6 +374,46 @@ def tasks_view(request) -> Response:
         )
     return Response(tasks_info)
 
+@api_view(["POST"])
+def add_edges(request) -> Response:
+    if "network" not in request.data:
+        return Response(None)
+    result = json.loads(request.data["result"])
+    parameters = result.get("parameters", {})
+    background_mapping = result.get("backgroundMapping", {})
+    background_mapping_reverse =  result.get("backgroundMappingReverse", {})
+    id_space = parameters["config"].get("identifier", "symbol")
+    edges = request.data["network"]["edges"]
+    nodes = request.data["network"]["nodes"]
+    custom_edges = parameters.get("customEdges", False)
+    ppi_dataset = parameters.get("ppiDataset")
+    pdi_dataset = parameters.get("pdiDataset")
+    filename = f"{id_space}_{ppi_dataset['name']}-{pdi_dataset['name']}"
+    if ppi_dataset['licenced'] or pdi_dataset['licenced']:
+        filename += "_licenced"
+    path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    data_dir = os.path.join(path, "data", "Networks")
+    filename = os.path.join(data_dir, filename + ".gt")
+    g = gt.load_graph(filename)
+    if custom_edges:
+        g = add_edges(g, edges)
+    all_nodes_int = set([int(background_mapping[gene["id"]]) for gene in nodes if gene["id"] in background_mapping])
+    edges_unique = set()
+    for node in nodes:
+        for neighbor in g.get_all_neighbors(background_mapping[node["id"]]):
+            if int(neighbor) > int(background_mapping[node["id"]]) and int(neighbor) in all_nodes_int:
+                first_key = next(iter(background_mapping_reverse))
+
+                if isinstance(first_key, int):
+                    neighbor_key = int(neighbor)
+                else:
+                    neighbor_key = str(int(neighbor))
+                edges_unique.add((node["id"], background_mapping_reverse[neighbor_key]))
+    
+      
+    edges = [{"from": source, "to":target} for
+                          source, target in edges_unique]
+    return Response(edges)
 
 @api_view(["POST"])
 def create_network(request) -> Response:
@@ -324,6 +501,30 @@ def load_network(request) -> Response:
     return Response(result)
 
 
+@api_view(["PUT"])
+def calculate_result_for_pathway(request) -> Response:
+    token_str = request.query_params["token"]
+    task = Task.objects.get(token=token_str)
+    result = task_result(task)
+    geneset = result["mapGenesetsReverse"][request.query_params["geneset"]]
+    pathway = request.query_params["pathway"]
+    if "geneset" in result and result["geneset"] == geneset and result["pathway"] == pathway:
+        # already parsed
+        return Response(result)
+    path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    data_dir = os.path.join(path, "data", "Networks")
+
+    df_from_json = pd.read_json(result["filteredDf"], orient='records')
+    network, isSeed = parse_pathway(geneset, pathway, df_from_json, task.parameters, data_dir, result["backgroundMapping"], result["backgroundMappingReverse"], result["mapGenesets"], result["geneSetsDict"])
+    result["network"] = network
+    result["geneset"] = request.query_params["geneset"]
+    result["pathway"] = pathway
+    result["node_attributes"] = {}
+    result["node_attributes"]["isSeed"] = isSeed
+    update_result(result, token_str)
+    return Response("worked!")
+  
+
 @api_view()
 def result_view(request) -> Response:
     node_name_attribute = "drugstone_id"
@@ -333,6 +534,8 @@ def result_view(request) -> Response:
     token_str = request.query_params["token"]
     task = Task.objects.get(token=token_str)
     result = task_result(task)
+    if result.get("algorithm") == "pathway_enrichment" or result.get("algorithm") == "louvain_clustering" or result.get("algorithm") == "leiden_clustering":
+        return Response(result)
     node_attributes = result.get("node_attributes")
     if not node_attributes:
         node_attributes = {}

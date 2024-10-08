@@ -66,35 +66,6 @@ class EnsemblGene(models.Model):
     protein = models.ForeignKey(
         "Protein", on_delete=models.CASCADE, related_name="ensg"
     )
-    
-class CellularComponent(models.Model):
-    id = models.AutoField(primary_key=True)
-    go_code = models.CharField(max_length=10)
-    display_name = models.CharField(max_length=255, default="")
-    layer = models.CharField(max_length=255, default="other")
-    
-    class Meta:
-        unique_together = ("go_code", "display_name")
-    
-    def __str__(self):
-        return self.display_name
-
-    def __eq__(self, other):
-        return (
-            self.go_code == other.go_code
-        )
-
-    def __ne__(self, other):
-        return not self.__eq__(other)
-
-    def __hash__(self):
-        return hash((self.go_code))
-
-    def update(self, other):
-        self.go_code = other.go_code
-        self.display_name = other.display_name
-        self.description = other.description
-        self.layer = other.layer
 
 
 class Protein(models.Model):
@@ -107,9 +78,6 @@ class Protein(models.Model):
     entrez = models.CharField(max_length=15, default="")
     drugs = models.ManyToManyField(
         "Drug", through="ProteinDrugInteraction", related_name="interacting_drugs"
-    )
-    cellular_components = models.ManyToManyField(
-        "CellularComponent", through="ActiveIn", related_name="active_in"
     )
     tissue_expression = models.ManyToManyField(
         "Tissue", through="ExpressionLevel", related_name="interacting_drugs"
@@ -154,14 +122,6 @@ class ExpressionLevel(models.Model):
     def __hash__(self):
         return hash(f"{self.tissue_id}_{self.protein_id}")
 
-class ActiveIn(models.Model):
-    id = models.AutoField(primary_key=True)
-    cellularComponent = models.ForeignKey("CellularComponent", on_delete=models.CASCADE)
-    protein = models.ForeignKey("Protein", on_delete=models.CASCADE)
-    class Meta:
-        unique_together = ("cellularComponent", "protein")
-    def __hash__(self):
-        return hash((self.cellularComponent_id, self.protein_id))
 
 class Tissue(models.Model):
     id = models.AutoField(primary_key=True)

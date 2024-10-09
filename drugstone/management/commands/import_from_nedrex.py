@@ -252,7 +252,7 @@ class NedrexImporter:
                 if update and e.__hash__() in existing:
                     if existing[e.__hash__()] != e:
                         delete.add(existing[e.__hash__()])
-                        del existing[e.__hash__()]
+                        del existing[e.__hash__()]  
                     else:
                         return
                 if not update or e.__hash__() not in existing:

@@ -169,11 +169,14 @@ def betweenness_centrality(task_hook: TaskHook):
 
     search_target = task_hook.parameters.get("target", "drug-target")
 
-    filterPaths = task_hook.parameters.get("filter_paths", True)
+    filterPaths = task_hook.parameters.get("filter_paths", True)  
 
     id_space = task_hook.parameters["config"].get("identifier","symbol")
 
     custom_edges = task_hook.parameters.get("custom_edges", False)
+    if custom_edges:
+        if not isinstance(custom_edges, list):
+            custom_edges = False
     
     no_default_edges =    no_default_edges = task_hook.parameters.get("exclude_drugstone_ppi_edges", False)
     

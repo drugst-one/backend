@@ -81,6 +81,9 @@ def network_proximity(task_hook: TaskHook):
     filter_paths = task_hook.parameters.get("filter_paths", True)
 
     custom_edges = task_hook.parameters.get("custom_edges", False)
+    if custom_edges:
+        if not isinstance(custom_edges, list):
+            custom_edges = False
     
     no_default_edges =    no_default_edges = task_hook.parameters.get("exclude_drugstone_ppi_edges", False)
     

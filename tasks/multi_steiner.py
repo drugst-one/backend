@@ -101,6 +101,9 @@ def multi_steiner(task_hook: TaskHook):
     node_name_attribute = "internal_id" # nodes in the input network which is created from RepoTrialDB have primaryDomainId as name attribute
 
     custom_edges = task_hook.parameters.get("custom_edges", False)
+    if custom_edges is not False:
+        if not isinstance(custom_edges, list):
+            custom_edges = False
     
     no_default_edges =    no_default_edges = task_hook.parameters.get("exclude_drugstone_ppi_edges", False)
     

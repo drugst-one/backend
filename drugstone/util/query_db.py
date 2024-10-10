@@ -1,9 +1,10 @@
 import copy
 from collections import defaultdict
+import json
 from typing import List, Tuple, Set, OrderedDict
 from functools import reduce
 from django.db.models import Q
-from drugstone.models import Protein, EnsemblGene
+from drugstone.models import Protein, EnsemblGene, Task
 from drugstone.serializers import ProteinSerializer
 
 
@@ -55,7 +56,24 @@ def query_proteins_by_identifier(node_ids: Set[str], identifier: str) -> Tuple[L
         return [], protein_attribute
     q_list = reduce(lambda a, b: a | b, q_list)
     node_objects = Protein.objects.filter(q_list)
-
+    
+    cc_to_node_ids = {}
+    for node in node_objects:
+        cellular_components = node.cellular_components.all()
+        components = []
+        for cc in cellular_components:
+            cc_string = cc.go_code + ":" + cc.display_name + ":" + cc.layer
+            components.append(cc_string)
+        
+        node_id = ''
+        if protein_attribute == 'symbol':
+            node_id = node.gene
+        elif protein_attribute == 'uniprot' or protein_attribute == 'ensg':
+            node_id = node.uniprot_code
+        elif protein_attribute == 'entrez':
+            node_id = node.entrez
+        cc_to_node_ids[node_id] = components
+        
     nodes = list()
     node_map = defaultdict(list)
     if protein_attribute == 'ensg':
@@ -64,13 +82,43 @@ def query_proteins_by_identifier(node_ids: Set[str], identifier: str) -> Tuple[L
                 if ensembl_id.upper() in node_ids:
                     node = copy.copy(node)
                     node[identifier] = ensembl_id
+                    id_node = node.get("uniprot")
+                    if id_node in cc_to_node_ids:
+                        node["cellular_component"] = cc_to_node_ids[id_node]
+                    else:
+                        node["cellular_component"] = []
                     node_map[ensembl_id].append(node)
     else:
         for node in ProteinSerializer(many=True).to_representation(node_objects):
+            id_node = node.get(protein_attribute)
+            if id_node in cc_to_node_ids:
+                node["cellular_component"] = cc_to_node_ids[id_node]
+            else:
+                node["cellular_component"] = []
             node_map[node.get(protein_attribute)].append(node)
     for node_id, entries in node_map.items():
         nodes.append(aggregate_nodes(entries))
-
+        
+    layer_ids = {'GO:0005737': "Cytoplasm", 'GO:0005634': "Nucleus", 'GO:0005576': "Extracellular", 'GO:0009986': "Cell surface", 'GO:0005886': "Plasma membrane"}
+    for node in nodes:
+        ccs = node.get("cellular_component", [])
+        if len(ccs) > 0:
+            layers = set()
+            for cc in ccs:
+                splitted = cc.split(":")
+                if len(splitted) == 4:
+                    # go could be mapped
+                    layer = "GO:" + cc.split(":")[3]
+                    layers.add(layer)
+            if len(layers) == 1:
+                node["layer"] = layer_ids[list(layers)[0]]
+            elif len(layers) == 0:
+                node["layer"] = "Other"
+            else:
+                node["layer"] = "Multiple"
+        else:
+            node["layer"] = "Unknown"
+            
     return nodes, protein_attribute
 
 
@@ -170,6 +218,11 @@ def aggregate_nodes(nodes: List[OrderedDict]):
                 node[key].add(value)
     return {k: list(v) for k, v in node.items()}
 
+def update_result(result, token: str):
+    task = Task.objects.get(token=token)
+    task.result = json.dumps(result)
+    task.save()
+    
 
 def fetch_node_information(nodes, identifier):
     id_map = {}
@@ -204,6 +257,7 @@ def fetch_node_information(nodes, identifier):
     for node in nodes:
         node["drugstoneType"] = "other"
         if node["id"] in nodes_mapped_dict:
+            node["cellular_component"] = []
             node.update(nodes_mapped_dict[node["id"]])
             node["drugstoneType"] = "protein"
         node["id"] = id_map[node["id"]]

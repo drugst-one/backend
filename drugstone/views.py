@@ -424,7 +424,6 @@ def recalculate_statistics(request) -> Response:
     custom_edges = config.get("custom_edges", False)
     no_default_edges = config.get("exclude_drugstone_ppi_edges", False)
     ppi_dataset = config.get("interactionProteinProtein")
-    ppi_dataset = ppi_dataset.replace("IID","iid") if "IID" in ppi_dataset else ppi_dataset
     pdi_dataset = config.get("interactionDrugProtein")
 
     filename = f"{id_space}_{ppi_dataset}-{pdi_dataset}"

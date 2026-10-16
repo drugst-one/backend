@@ -28,7 +28,7 @@ RUN "${CONDA_DIR}/etc/profile.d/mamba.sh"
 RUN conda init bash
 
 RUN mamba update -n base -c defaults mamba conda
-RUN mamba install -y python=3.10
+RUN mamba install -c conda-forge -y python=3.10 mamba graph-tool=2.55 git
 RUN mamba update -y --all
 RUN pip install pip==23
 RUN pip install --upgrade pip requests cryptography pyopenssl
@@ -45,12 +45,6 @@ ENV LANG=C.UTF-8
 
 RUN apt update && apt upgrade -y
 RUN apt install -y supervisor nginx libgtk-3-dev
-
-RUN conda install -y conda python=3.10
-
-RUN mamba install -c conda-forge -y graph-tool=2.55
-
-RUN mamba install git -y
 
 RUN pip install gunicorn uv
 

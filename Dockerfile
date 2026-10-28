@@ -1,4 +1,4 @@
-FROM ubuntu:noble as drugstone_base
+FROM ubuntu:resolute as drugstone_base
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 ENV LC_ALL=C.UTF-8
@@ -10,11 +10,11 @@ RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y supervisor l
 RUN apt-get update && apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release software-properties-common cron unzip
 RUN apt-get autoclean -y && apt-get autoremove -y && apt-get clean -y
 
-RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+RUN #curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
 
-RUN add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu lunar stable"
+RUN #add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu lunar stable"
 
-RUN apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io
+RUN #apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io
 
 ENV CONDA_DIR /opt/conda
 RUN wget "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
@@ -28,7 +28,7 @@ RUN "${CONDA_DIR}/etc/profile.d/mamba.sh"
 RUN conda init bash
 
 RUN mamba update -n base -c defaults mamba conda
-RUN mamba install -c conda-forge -y python=3.10 mamba graph-tool=2.55 git
+RUN mamba install -c conda-forge -y python=3.11 mamba graph-tool=2.55 git
 RUN mamba update -y --all
 RUN pip install pip==23
 RUN pip install --upgrade pip requests cryptography pyopenssl

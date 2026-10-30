@@ -16,6 +16,10 @@ RUN #add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubun
 
 RUN #apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io
 
+# Force conda to pick baseline x86-64 builds. Without this the solver uses the CPU of the
+# build machine and may select AVX2-only (x86-64-v3) builds such as graph-tool-base *_300,
+# which crash with "Illegal instruction" on older production CPUs.
+ENV CONDA_OVERRIDE_ARCHSPEC=x86_64
 ENV CONDA_DIR /opt/conda
 RUN wget "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
 RUN bash Miniforge3-$(uname)-$(uname -m).sh -b -p "${CONDA_DIR}"

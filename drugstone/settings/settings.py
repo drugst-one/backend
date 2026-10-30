@@ -35,6 +35,7 @@ ALLOWED_HOSTS = [
     "drugst.one",
     "stable.drugst.one",
     "dev.drugst.one",
+    "api.drugst.one",
     "drugst.one",
     "dev.api.drugst.one"
 ]

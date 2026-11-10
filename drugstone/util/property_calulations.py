@@ -107,7 +107,18 @@ def calculate_properties(nodes, g, identifier, edges, calculateProperties = True
 def calculate_filtered_degree(g, vertex, target_type):
     """
     Calculates the degree of a vertex considering only edges of a specific type.
+
+    Counts distinct neighbors, like the degree in the network: one graph vertex stands for all
+    protein entries with the same identifier, so the graph can hold parallel edges between two
+    vertices (and custom edges can repeat existing ones). Self-loops are not counted.
     """
     edge_type = g.edge_properties["type"]
-    # Count edges connected to the vertex that match the target type
-    return sum(1 for edge in vertex.all_edges() if edge_type[edge] == target_type)
+    index = int(vertex)
+    neighbors = set()
+    for edge in vertex.all_edges():
+        if edge_type[edge] == target_type:
+            source, target = int(edge.source()), int(edge.target())
+            neighbor = target if source == index else source
+            if neighbor != index:
+                neighbors.add(neighbor)
+    return len(neighbors)

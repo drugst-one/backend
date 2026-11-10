@@ -1,10 +1,11 @@
 from drugstone.util.property_calulations import calculate_properties
 from drugstone.util.query_db import query_proteins_by_identifier, fetch_edges_for_proteins
-from tasks.util.custom_network import add_edges, remove_ppi_edges
+from tasks.util.custom_network import add_edges, graph_first_neighbors, remove_ppi_edges
 from tasks.task_hook import TaskHook
 import graph_tool as gt
 from drugstone.models import *
 from drugstone.serializers import *
+import copy
 import os
 
 
@@ -99,25 +100,39 @@ def first_neighbor(task_hook: TaskHook):
     reviewed = task_hook.parameters["config"].get("reviewed", False)
     seeds_mapped, _ = query_proteins_by_identifier(set(seeds), identifier_key, reviewed)
     seeds_uniprot = {uniprot for node in seeds_mapped if node.get("uniprot") for uniprot in node["uniprot"]}
-    
-    
-    # Fetch all edges where seeds are either from_protein or to_protein
-    interaction_objects = fetch_edges_for_proteins(
-        ppi_dataset['name'], 
-        ppi_dataset['licenced'], 
-        seeds_uniprot
-    )
-    
-    # Extract all unique proteins from these edges (seeds + first neighbors)
-    # Start with seeds_uniprot to ensure seeds are always included
-    all_protein_ids = set(seeds_uniprot)
-    for interaction in interaction_objects:
-        all_protein_ids.add(interaction.from_protein.uniprot_code)
-        all_protein_ids.add(interaction.to_protein.uniprot_code)
-    
-    # Map all proteins (seeds + first neighbors) - use "uniprot" since all_protein_ids contains UniProt codes
-    all_nodes_mapped, _ = query_proteins_by_identifier(all_protein_ids, "uniprot", reviewed)
-    
+
+    if custom_edges:
+        # Neighbors and edges come from the same graph the other algorithms use: the
+        # background graph with the custom edges added (and its PPI removed if requested).
+        seed_ids = {value for node in seeds_mapped for value in node.get(identifier_key) or []}
+        subnet_ids, custom_subnet_edges = graph_first_neighbors(
+            g, seed_ids, "custom" if no_default_edges else ppi_dataset['name'])
+        all_nodes_mapped, _ = query_proteins_by_identifier(subnet_ids, identifier_key, reviewed)
+    else:
+        # Fetch all edges where seeds are either from_protein or to_protein
+        interaction_objects = fetch_edges_for_proteins(
+            ppi_dataset['name'],
+            ppi_dataset['licenced'],
+            seeds_uniprot
+        )
+
+        # Extract all unique proteins from these edges (seeds + first neighbors)
+        # Start with seeds_uniprot to ensure seeds are always included
+        all_protein_ids = set(seeds_uniprot)
+        for interaction in interaction_objects:
+            all_protein_ids.add(interaction.from_protein.uniprot_code)
+            all_protein_ids.add(interaction.to_protein.uniprot_code)
+
+        # Map all proteins (seeds + first neighbors) - use "uniprot" since all_protein_ids contains UniProt codes
+        all_nodes_mapped, _ = query_proteins_by_identifier(all_protein_ids, "uniprot", reviewed)
+
+    # A node is reviewed if any protein entry with its identifier is reviewed
+    # (query_proteins_by_identifier aggregates "isReviewed" into a list).
+    reviewed_ids = {
+        node[identifier_key][0] for node in all_nodes_mapped
+        if node.get(identifier_key) and any(value in (True, "True") for value in node.get("isReviewed") or [])
+    }
+
     
     # Create mapping from identifier_key to node
     nodes_mapped_dict = {}
@@ -144,7 +159,7 @@ def first_neighbor(task_hook: TaskHook):
         cellular_component = nodes_mapped_dict[node].get("cellular_component", [])
         layer = nodes_mapped_dict[node].get("layer", "")
         ensg = nodes_mapped_dict[node].get("ensg", "")
-        isReviewed = nodes_mapped_dict[node].get("is_reviewed", False)
+        isReviewed = node in reviewed_ids
         if node in set(seedSet):
             isSeed[node] = True
             group = "seedNode"
@@ -171,27 +186,27 @@ def first_neighbor(task_hook: TaskHook):
         all_nodes_mapped_list.append(mapped_node)
     
     task_hook.set_progress(3 / 4.0, "Get all edges within the subnetwork.")
-    
+
     # Get all UniProt codes in the subnetwork (seeds + first neighbors)
     # Include all UniProt IDs, not just the first one
     subnet_uniprot = set(seeds_uniprot)  # Start with seeds to ensure they're always included
     for node in all_nodes_mapped:
         if node.get("uniprot"):
             subnet_uniprot.update(node["uniprot"])  # Add all UniProt IDs
-    
+
     # Fetch ALL edges between subnetwork nodes (not just those involving seeds)
     # This includes edges between first neighbors that don't involve seeds directly
     # Use require_both_nodes=True for more efficient query
-    subnet_interactions = fetch_edges_for_proteins(
-        ppi_dataset['name'], 
-        ppi_dataset['licenced'], 
+    subnet_interactions = [] if custom_edges else fetch_edges_for_proteins(
+        ppi_dataset['name'],
+        ppi_dataset['licenced'],
         subnet_uniprot,
         require_both_nodes=True
     )
-    
+
     # Convert edges directly from interaction objects (not serialized)
     # This way we have access to the actual Protein objects with uniprot_code
-    edges = []
+    edges = list(custom_subnet_edges) if custom_edges else []
     uniprot_to_identifier = {}
     # Create mapping from all UniProt IDs to identifier_key value
     for node in all_nodes_mapped:
@@ -199,7 +214,7 @@ def first_neighbor(task_hook: TaskHook):
             identifier_value = node[identifier_key][0]
             for uniprot in node["uniprot"]:
                 uniprot_to_identifier[uniprot] = identifier_value
-    
+
     for interaction in subnet_interactions:
         from_uniprot = interaction.from_protein.uniprot_code
         to_uniprot = interaction.to_protein.uniprot_code
@@ -217,6 +232,8 @@ def first_neighbor(task_hook: TaskHook):
 
     if not allow_self_references:
         edges = [edge for edge in edges if edge["from"] != edge["to"]]
+
+    edges = deduplicate_edges(edges)
 
     # Filter nodes to keep only upstream regulators if parameter is set
     only_upstream_regulators = task_hook.parameters.get("only_upstream_regulators", False)
@@ -314,9 +331,16 @@ def first_neighbor(task_hook: TaskHook):
         
         if suggested_cutoff is not None:
             print(suggested_cutoff, "\n")
-            all_nodes_mapped = [node for node in all_nodes_mapped if node["id"] in nodes_to_keep_ids]
-            edges = [edge for edge in edges 
+            # Copy the kept nodes: network_initial keeps the properties of the complete network.
+            all_nodes_mapped = [copy.deepcopy(node) for node in all_nodes_mapped if node["id"] in nodes_to_keep_ids]
+            edges = [edge for edge in edges
                      if edge.get("from") in nodes_to_keep_ids and edge.get("to") in nodes_to_keep_ids]
+            # Recalculate the properties on the pruned network, as after manual pruning.
+            pruned_edges_for_properties = [
+                {"from": edge["from"], "to": edge["to"]} for edge in edges_for_properties
+                if edge["from"] in nodes_to_keep_ids and edge["to"] in nodes_to_keep_ids
+            ]
+            all_nodes_mapped = calculate_properties(all_nodes_mapped, g, identifier_key, pruned_edges_for_properties, True)
             task_hook.parameters["suggested_spd_cutoff"] = suggested_cutoff
         else:
             print("No suggested cutoff found")
@@ -344,3 +368,32 @@ def first_neighbor(task_hook: TaskHook):
         result_dict["automaticCutoff"] = True
     
     task_hook.set_results(result_dict)
+
+
+def deduplicate_edges(edges):
+    """
+    Returns each interaction once.
+
+    Several database records can map to the same node pair (several protein entries per
+    identifier, both directions, several records per pair). Undirected edges are merged
+    regardless of direction, directed edges per direction; an undirected edge is dropped if
+    the pair also has a directed one. Stimulation and inhibition flags of merged records are
+    combined.
+    """
+    directed_pairs = {frozenset((edge["from"], edge["to"])) for edge in edges if edge.get("is_directed")}
+    merged = {}
+    for edge in edges:
+        if edge.get("is_directed"):
+            key = (edge["from"], edge["to"])
+        else:
+            pair = frozenset((edge["from"], edge["to"]))
+            if pair in directed_pairs:
+                continue
+            key = pair
+        if key in merged:
+            kept = merged[key]
+            kept["is_stimulation"] = bool(kept.get("is_stimulation") or edge.get("is_stimulation"))
+            kept["is_inhibition"] = bool(kept.get("is_inhibition") or edge.get("is_inhibition"))
+        else:
+            merged[key] = dict(edge)
+    return list(merged.values())

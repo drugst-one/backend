@@ -2,8 +2,8 @@ import copy
 from collections import defaultdict
 import json
 from typing import List, Tuple, Set, OrderedDict
-from functools import reduce
 from django.db.models import Q
+from django.db.models.functions import Upper
 from drugstone import models
 from drugstone.models import Protein, EnsemblGene, Task
 from drugstone.serializers import ProteinProteinInteractionSerializer, ProteinSerializer
@@ -25,6 +25,28 @@ def get_ppi_ds(source, licenced):
     return ds
 
 
+PROTEIN_ATTRIBUTES = {"symbol": "symbol", "uniprot": "uniprot", "ensg": "ensg", "ensembl": "ensg",
+                      "entrez": "entrez", "ncbigene": "entrez"}
+
+
+def proteins_by_identifier(node_ids, protein_attribute: str):
+    """Returns the proteins matching the IDs in one query, case-insensitive except for Entrez IDs.
+
+    UPPER() values are compared with IN, which uses the functional indexes; one OR condition per ID
+    cannot use an index and gets slow for thousands of IDs.
+    """
+    upper_ids = {str(n).upper() for n in node_ids}
+    if protein_attribute == "symbol":
+        return Protein.objects.annotate(lookup=Upper("gene")).filter(lookup__in=upper_ids)
+    if protein_attribute == "uniprot":
+        return Protein.objects.annotate(lookup=Upper("uniprot_code")).filter(lookup__in=upper_ids)
+    if protein_attribute == "ensg":
+        protein_ids = EnsemblGene.objects.annotate(lookup=Upper("name")).filter(
+            lookup__in=upper_ids).values_list("protein_id", flat=True)
+        return Protein.objects.filter(id__in=list(protein_ids))
+    return Protein.objects.filter(entrez__in=[str(n) for n in node_ids])
+
+
 def query_proteins_by_identifier(node_ids: Set[str], identifier: str, reviewed: bool) -> Tuple[List[dict], str]:
     """Queries the django database Protein table given a list of identifiers (node_ids) and a identifier name
     (identifier).
@@ -44,29 +66,14 @@ def query_proteins_by_identifier(node_ids: Set[str], identifier: str, reviewed: 
     # query protein table
     if (len(node_ids) == 0):
         return list(), identifier
-    if identifier == 'symbol':
-        protein_attribute = 'symbol'
-        q_list = map(lambda n: Q(gene__iexact=n), node_ids)
-    elif identifier == 'uniprot':
-        protein_attribute = 'uniprot'
-        q_list = map(lambda n: Q(uniprot_code__iexact=n), node_ids)
-    elif identifier == 'ensg' or identifier == 'ensembl':
-        protein_attribute = 'ensg'
-        dr_ids = map(lambda n: n.protein_id, EnsemblGene.objects.filter(
-            reduce(lambda a, b: a | b, map(lambda n: Q(name__iexact=n), list(node_ids)))))
-        q_list = map(lambda n: Q(id=n), dr_ids)
-    elif identifier == 'entrez' or identifier == 'ncbigene':
-        protein_attribute = 'entrez'
-        q_list = map(lambda n: Q(entrez=n), node_ids)
-    if not node_ids:
-        # node_ids is an empty list
-        return [], protein_attribute
-    q_list = reduce(lambda a, b: a | b, q_list)
-    
+    protein_attribute = PROTEIN_ATTRIBUTES.get(identifier)
+    if protein_attribute is None:
+        return [], identifier
+    proteins = proteins_by_identifier(node_ids, protein_attribute)
     if reviewed:
-        node_objects = Protein.objects.filter(q_list, isReviewed=True)
-    else:
-        node_objects = Protein.objects.filter(q_list)
+        proteins = proteins.filter(isReviewed=True)
+    # load related rows in bulk instead of one query per protein (cellular components here, ENSG in the serializer)
+    node_objects = proteins.prefetch_related("cellular_components", "ensg")
 
     
     cc_to_node_ids = {}
@@ -135,15 +142,15 @@ def query_proteins_by_identifier(node_ids: Set[str], identifier: str, reviewed: 
     return nodes, protein_attribute
 
 def get_protein_ids(id_space, proteins):
-    if (id_space == 'uniprot'):
-        return {p['uniprot'] for p in proteins}
-    if (id_space == 'ensg' or id_space == 'ensembl'):
-        return {p['ensg'] for p in proteins}
-    if (id_space == 'symbol'):
-        return {p['symbol'] for p in proteins}
-    if (id_space == 'entrez' or id_space == 'ncbigene'):
-        return {p['entrez'] for p in proteins}
-    return set()
+    attribute = PROTEIN_ATTRIBUTES.get(id_space)
+    if attribute is None:
+        return set()
+    ids = set()
+    for p in proteins:
+        # ensg is a list, a protein can have several Ensembl genes
+        value = p[attribute]
+        ids |= set(value) if isinstance(value, list) else {value}
+    return ids
 
 
 def clean_proteins_from_compact_notation(node_ids: Set[str], identifier: str) -> List[str]:
@@ -190,28 +197,23 @@ def clean_proteins_from_compact_notation(node_ids: Set[str], identifier: str) ->
     for id_space, ids in id_map.items():
         if len(ids) == 0:
             continue
-        if id_space == 'symbol:':
-            q_list = map(lambda n: Q(gene__iexact=n), ids)
-        elif id_space == 'uniprot:':
-            q_list = map(lambda n: Q(uniprot_code__iexact=n), ids)
-        elif id_space == 'ensg:':
-            ensembls = EnsemblGene.objects.filter(reduce(lambda a, b: a | b, map(lambda n: Q(name__iexact=n), ids)))
-            if len(ensembls) == 0:
-                continue
-            dr_ids = map(lambda n: n.protein_id, ensembls)
-            q_list = map(lambda n: Q(id=n), dr_ids)
-        elif id_space == 'entrez:':
-            q_list = map(lambda n: Q(entrez=n), ids)
-        else:
+        protein_attribute = PROTEIN_ATTRIBUTES.get(id_space[:-1])
+        if protein_attribute is None:
             continue
-        q_list = reduce(lambda a, b: a | b, q_list)
-        proteins = ProteinSerializer(many=True).to_representation(Protein.objects.filter(q_list))
+        proteins = ProteinSerializer(many=True).to_representation(
+            proteins_by_identifier(ids, protein_attribute).prefetch_related("ensg"))
         # if protein could not be mapped
         clean_ids_temp = get_protein_ids(identifier, proteins)
-        if '' in clean_ids_temp:
-            clean_ids_temp.remove('')
+        clean_ids_temp.discard('')
+        target_attribute = PROTEIN_ATTRIBUTES.get(identifier)
+        missing = [p for p in proteins if target_attribute and p[target_attribute] in ('', [])]
+        if missing:
             # at least one protein could not be found in id space, use original id as placeholder
-            ids_placeholder = {p[MAP_ID_SPACE_COMPACT_TO_DRUGSTONE[id_space]] for p in proteins if p[identifier] == ''}
+            if protein_attribute == 'ensg':
+                # use the requested Ensembl ID, not all Ensembl genes of the protein
+                ids_placeholder = {e for p in missing for e in p['ensg'] if e.upper() in ids}
+            else:
+                ids_placeholder = get_protein_ids(protein_attribute, missing)
             clean_ids_temp |= ids_placeholder
         clean_ids |= clean_ids_temp
 

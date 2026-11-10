@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models.functions import Upper
 
 
 # Main biological and medical entities
@@ -66,6 +67,10 @@ class EnsemblGene(models.Model):
     protein = models.ForeignKey(
         "Protein", on_delete=models.CASCADE, related_name="ensg"
     )
+
+    class Meta:
+        # node mapping looks names up case-insensitively
+        indexes = [models.Index(Upper("name"), name="ensemblgene_upper_name_idx")]
     
 class CellularComponent(models.Model):
     id = models.AutoField(primary_key=True)
@@ -118,6 +123,12 @@ class Protein(models.Model):
 
     class Meta:
         unique_together = ("uniprot_code", "gene", "entrez")
+        # node mapping looks proteins up case-insensitively by UniProt code or gene symbol
+        indexes = [
+            models.Index(Upper("uniprot_code"), name="protein_upper_uniprot_idx"),
+            models.Index(Upper("gene"), name="protein_upper_gene_idx"),
+            models.Index(fields=["entrez"], name="protein_entrez_idx"),
+        ]
 
     def __str__(self):
         return self.gene

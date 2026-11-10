@@ -233,6 +233,8 @@ def first_neighbor(task_hook: TaskHook):
     if not allow_self_references:
         edges = [edge for edge in edges if edge["from"] != edge["to"]]
 
+    edges = deduplicate_edges(edges)
+
     # Filter nodes to keep only upstream regulators if parameter is set
     only_upstream_regulators = task_hook.parameters.get("only_upstream_regulators", False)
     is_omnipath = ppi_dataset["name"] == "OmniPath"
@@ -366,3 +368,32 @@ def first_neighbor(task_hook: TaskHook):
         result_dict["automaticCutoff"] = True
     
     task_hook.set_results(result_dict)
+
+
+def deduplicate_edges(edges):
+    """
+    Returns each interaction once.
+
+    Several database records can map to the same node pair (several protein entries per
+    identifier, both directions, several records per pair). Undirected edges are merged
+    regardless of direction, directed edges per direction; an undirected edge is dropped if
+    the pair also has a directed one. Stimulation and inhibition flags of merged records are
+    combined.
+    """
+    directed_pairs = {frozenset((edge["from"], edge["to"])) for edge in edges if edge.get("is_directed")}
+    merged = {}
+    for edge in edges:
+        if edge.get("is_directed"):
+            key = (edge["from"], edge["to"])
+        else:
+            pair = frozenset((edge["from"], edge["to"]))
+            if pair in directed_pairs:
+                continue
+            key = pair
+        if key in merged:
+            kept = merged[key]
+            kept["is_stimulation"] = bool(kept.get("is_stimulation") or edge.get("is_stimulation"))
+            kept["is_inhibition"] = bool(kept.get("is_inhibition") or edge.get("is_inhibition"))
+        else:
+            merged[key] = dict(edge)
+    return list(merged.values())

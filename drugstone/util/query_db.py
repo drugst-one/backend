@@ -369,7 +369,13 @@ def fetch_edges_for_proteins(ppi_dataset_name: str, licenced: bool, uniprot_code
             Q(ppi_dataset=dataset_object) &
             (Q(from_protein__uniprot_code__in=uniprot_codes) | Q(to_protein__uniprot_code__in=uniprot_codes))
         )
-    
+
+    # Load both proteins in the same query: callers read from_protein/to_protein of every
+    # interaction, which otherwise costs two extra queries per record.
+    interaction_objects = interaction_objects.select_related("from_protein", "to_protein").only(
+        "is_directed", "is_stimulation", "is_inhibition",
+        "from_protein__uniprot_code", "to_protein__uniprot_code",
+    )
     return list(interaction_objects)
 
 def map_edges(ppi_dataset, edges, nodes_mapped_dict, drugstone_mapping, drugstone_identifier="drugstone_id"):

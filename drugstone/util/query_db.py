@@ -371,24 +371,48 @@ def fetch_edges_for_proteins(ppi_dataset_name: str, licenced: bool, uniprot_code
     return list(interaction_objects)
 
 def map_edges(ppi_dataset, edges, nodes_mapped_dict, drugstone_mapping, drugstone_identifier="drugstone_id"):
-    drugstone_edges = []
+    protein_to_node = {}
+    for key, node in nodes_mapped_dict.items():
+        for protein in node.get(drugstone_identifier) or []:
+            protein_to_node.setdefault(protein, key)
+
+    mapped_edges, other_edges, pairs = [], [], []
     for edge in edges:
         if edge["from"] in nodes_mapped_dict and edge["to"] in nodes_mapped_dict:
-            fr = nodes_mapped_dict[edge["from"]][drugstone_identifier][0]
-            to = nodes_mapped_dict[edge["to"]][drugstone_identifier][0]
-            edge_data = {k: v for k, v in edge.items() if k not in ['from', 'to']}
-            edge_data.update({"from": fr, "to": to})
-            drugstone_edges.append(edge_data)
+            mapped_edges.append(edge)
+            pairs.extend(
+                {"from": fr, "to": to}
+                for fr in nodes_mapped_dict[edge["from"]][drugstone_identifier]
+                for to in nodes_mapped_dict[edge["to"]][drugstone_identifier]
+            )
         else:
-            drugstone_edges.append(edge)
-    
-    drugstone_edges = fetch_edges_from_input(ppi_dataset['name'], ppi_dataset['licenced'], drugstone_edges)
-    edges = []
-    for edge in drugstone_edges:
-        if edge["from"] in drugstone_mapping and edge["to"] in drugstone_mapping:
-            edge["from"] = drugstone_mapping[edge["from"]]
-            edge["to"] = drugstone_mapping[edge["to"]]
-            edges.append(edge)
-        else:
-            edges.append(edge)
-    return edges
+            other_edges.append(edge)
+
+    found = {}
+    for edge in fetch_edges_from_input(ppi_dataset['name'], ppi_dataset['licenced'], pairs) if pairs else []:
+        if "dataset" in edge:
+            found.setdefault((edge["from"], edge["to"]), edge)
+
+    is_omnipath = ppi_dataset['name'] == "OmniPath"
+    result = []
+    for edge in mapped_edges:
+        annotated = {}
+        for fr in nodes_mapped_dict[edge["from"]][drugstone_identifier]:
+            for to in nodes_mapped_dict[edge["to"]][drugstone_identifier]:
+                matches = [found.get((fr, to))]
+                if is_omnipath or matches[0] is None:
+                    matches.append(found.get((to, fr)))
+                for match in matches:
+                    if match is None:
+                        continue
+                    key = (protein_to_node[match["from"]], protein_to_node[match["to"]])
+                    annotated.setdefault(key, {**match, "from": key[0], "to": key[1]})
+        result.extend(annotated.values() or [edge])
+
+    if other_edges:
+        for edge in fetch_edges_from_input(ppi_dataset['name'], ppi_dataset['licenced'], other_edges):
+            if drugstone_mapping and edge["from"] in drugstone_mapping and edge["to"] in drugstone_mapping:
+                edge["from"] = drugstone_mapping[edge["from"]]
+                edge["to"] = drugstone_mapping[edge["to"]]
+            result.append(edge)
+    return result

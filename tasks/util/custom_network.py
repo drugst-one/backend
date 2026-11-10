@@ -18,9 +18,9 @@ def add_edges(g, edge_list):
     mapping = make_node_id_map(g)
     edge_id_list = []
     for edge in edge_list:
-        a = mapping[edge['from']] if edge['from'] in mapping else False
-        b = mapping[edge['to']] if edge['to'] in mapping else False
-        if a and b:
+        a = mapping.get(edge['from'])
+        b = mapping.get(edge['to'])
+        if a is not None and b is not None:
             edge_id_list.append((a, b, 'protein-protein'))
     e_type = g.edge_properties["type"]
     g.add_edge_list(edge_id_list, eprops=[e_type])

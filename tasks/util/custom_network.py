@@ -51,6 +51,40 @@ def add_edges(g, edge_list):
     g.add_edge_list(edge_id_list, eprops=[e_type])
     return g
 
+def graph_first_neighbors(g, seed_ids, dataset_name):
+    """
+    Returns the seeds with their first neighbors in g and the protein-protein edges among them.
+
+    seed_ids are internal_id values of g (the identifier space of the graph). Seeds missing
+    from g are kept without edges. Edges are undirected, each pair once, as
+    [{"from", "to", "is_directed", "is_stimulation", "is_inhibition", "dataset"}, ...].
+    """
+    mapping = make_node_id_map(g)
+    names = g.vertex_properties['internal_id']
+    e_type = g.edge_properties["type"]
+
+    def ppi_neighbors(index):
+        for edge in g.vertex(index).all_edges():
+            if e_type[edge] == 'protein-protein':
+                source, target = int(edge.source()), int(edge.target())
+                yield target if source == index else source
+
+    seed_indices = {mapping[seed] for seed in seed_ids if seed in mapping}
+    subnet = set(seed_indices)
+    for index in seed_indices:
+        subnet.update(ppi_neighbors(index))
+
+    pairs = set()
+    for index in subnet:
+        for neighbor in ppi_neighbors(index):
+            if neighbor in subnet:
+                pairs.add((min(index, neighbor), max(index, neighbor)))
+
+    edges = [{"from": names[a], "to": names[b], "is_directed": False, "is_stimulation": False,
+              "is_inhibition": False, "dataset": dataset_name} for a, b in sorted(pairs)]
+    return set(seed_ids) | {names[index] for index in subnet}, edges
+
+
 def remove_ppi_edges(g):
     """
     removes all edges from g with type 'protein-protein'

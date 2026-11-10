@@ -11,6 +11,31 @@ def make_node_id_map_pp(g):
         mapping[g.vertex_properties['internal_id'][node]] = node
     return mapping
 
+def expand_compact_edges(edges):
+    """
+    Returns edges as [{"from": ..., "to": ...}, ...].
+
+    Besides that list, accepts the compact format {"nodes": [id, ...], "edges": [[i, j], ...]},
+    where i and j are positions in "nodes". Large networks are about a third of the size in it.
+    Raises ValueError for any other structure.
+    """
+    if isinstance(edges, list):
+        return edges
+    if not isinstance(edges, dict) or set(edges) != {"nodes", "edges"}:
+        raise ValueError('Edges must be a list of {"from": ..., "to": ...} or '
+                         '{"nodes": [...], "edges": [[i, j], ...]}.')
+    nodes, pairs = edges["nodes"], edges["edges"]
+    if not isinstance(nodes, list) or not isinstance(pairs, list):
+        raise ValueError('"nodes" and "edges" must be lists.')
+    expanded = []
+    for pair in pairs:
+        if (not isinstance(pair, list) or len(pair) != 2
+                or not all(type(i) is int and 0 <= i < len(nodes) for i in pair)):
+            raise ValueError(f'Each edge must be a pair of positions in "nodes", got {pair!r}.')
+        expanded.append({"from": nodes[pair[0]], "to": nodes[pair[1]]})
+    return expanded
+
+
 def add_edges(g, edge_list):
     """
     edge list is [{"fom":..., "to":...}, ...]

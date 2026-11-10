@@ -50,7 +50,7 @@ from tasks.create_genesets import parse_genesets;
 
 from drugstone.settings import DEFAULTS
 import os
-from tasks.util.custom_network import remove_ppi_edges
+from tasks.util.custom_network import expand_compact_edges, remove_ppi_edges
 
 
 def get_ppi_ds(source, licenced):
@@ -191,6 +191,14 @@ class TaskView(APIView):
         parameters = request.data["parameters"]
         licenced = parameters.get("licenced", False)
         algorithm = request.data["algorithm"]
+
+        # custom edges may be sent in the compact format; the tasks read the expanded edge list
+        input_network = parameters.get("input_network")
+        if isinstance(input_network, dict) and "edges" in input_network:
+            try:
+                input_network["edges"] = expand_compact_edges(input_network["edges"])
+            except ValueError as e:
+                return Response({"error": str(e)}, status=400)
 
         # find databases based on parameter strings
         parameters["ppi_dataset"] = PPIDatasetSerializer().to_representation(

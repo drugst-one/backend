@@ -6,6 +6,7 @@ import time
 import uuid
 import mimetypes
 from collections import defaultdict
+from io import StringIO
 from typing import List
 
 import pandas as pd
@@ -936,7 +937,7 @@ def calculate_result_for_pathway(request) -> Response:
     path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     data_dir = os.path.join(path, "data", "Networks")
 
-    df_from_json = pd.read_json(result["filteredDf"], orient='records')
+    df_from_json = pd.read_json(StringIO(result["filteredDf"]), orient='records')
     network, isSeed = parse_pathway(geneset, pathway, df_from_json, task.parameters, data_dir,
                                     result["backgroundMapping"], result["backgroundMappingReverse"],
                                     result["mapGenesets"], result["geneSetsDict"], result["score_preparations"])
